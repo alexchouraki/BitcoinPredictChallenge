@@ -1,0 +1,105 @@
+---
+title: "Super projet BTC-NLP"
+output: html_notebook
+---
+
+```{r}
+library(lubridate)
+library(tidyverse)
+```
+
+# Principes généraux
+
+Le but de l'exercice est d'essayer de prédire l'évolution du cours du Bitcoin.
+
+- Ici, on se concentrera uniquement sur la variable binaire "Est-ce que le bitcoin a monté ou a baissé entre deux journées" ?
+
+- On ne se souciera donc pas de *quantifier* la prédiction de hausse ou de baisse du bitcoin.
+
+Pour cela, plusieurs idées possibles :
+
+- Utiliser les données Google Trends pour voir un peu les tendances haussières / baissières
+
+- Faire du NLP sur les forums de Bitcoin (sentiment analysis ?)
+
+- Essayer de faire une analyse technique financière d'après le Bitcoin
+
+
+# Retrieve the Bitcoin data
+
+For information, the file `bitcoin_price.csv` has been downloaded from Coindesk ([available here](https://www.coindesk.com/price/)).
+
+```{r}
+bitcoin.data = read.csv("./data/bitcoin_price.csv")
+```
+
+## Cleaning the data a bit
+
+```{r}
+bitcoin.data = bitcoin.data %>% filter(!is.na(Close.Price)) # Remove the last two lines
+```
+
+```{r}
+bitcoin.data$Date = bitcoin.data$Date %>% # Remove the time from the date
+  sapply(as.character) %>%
+  sapply(substr, 1, 10)
+
+bitcoin.data$Date = ymd(bitcoin.data$Date) # Transform the date from string into a lubridate
+```
+
+## Generate the binary variable we need to predict
+
+```{r}
+binary.variable = rep(NA, nrow(bitcoin.data))
+
+for(i in c(1:(nrow(bitcoin.data) - 1))){
+  
+  if(bitcoin.data$Close.Price[i] > bitcoin.data$Close.Price[i+1]){
+    
+    binary.variable[i+1] = "Down"
+    
+  } else {binary.variable[i+1] = "Up"}
+  
+}
+```
+
+```{r}
+bitcoin.data$Trend = binary.variable
+```
+
+## Result: data that is clean, with the proper variable to predict
+```{r}
+bitcoin.data
+```
+
+```{r}
+ggplot(data = bitcoin.data,
+       aes(x = Date, y = Close.Price)) +
+  geom_line()
+```
+
+# Quelques réflexions sur des pistes à suivre
+
+## Analyse technique sur le cours
+Pas facile à implémenter, d'autant plus que je pense qu'une des suppositoins, c'est que nos prédictions sont indépendantes (i.e. la prédiction pour le jour j doit être indépendante de celle pour le jour j+1 ou celle pour le jour j-1).
+
+A voir si on a le droit d'utiliser les données "déjà passées" pour faire des prédictions futures (i.e. si on veut faire une prédiction pour le 10 mai, est-ce qu'on a le droit d'utiliser le cours du 1 au 9 mai ?)
+
+## Google Trends
+Piste intéressante. Mais problème : à partir d'un certain stade, les données Google Trends s'obtiennent par semaine, et plus par jour, donc on n'a plus grand chose d'exploitable.
+
+```{r}
+trends = read.csv('./data/trends.csv')
+```
+
+### Graphe correspondant (exemple Bitcoin)
+
+```{r}
+trends$date = ymd(trends$date)
+ggplot(data = trends,
+       aes(x = date, y = bitcoin)) +
+  geom_line()
+```
+
+
+
