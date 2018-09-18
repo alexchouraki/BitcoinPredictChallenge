@@ -61,6 +61,8 @@ for(i in c(1:(nrow(bitcoin.data) - 1))){
   } else {binary.variable[i+1] = "Up"}
   
 }
+
+binary.variable[1] = "Up" # Je n'ai pas inclus le 30 avril dans le dataset, donc je rajoute cette ligne manuellement ici
 ```
 
 ```{r}
@@ -101,5 +103,18 @@ ggplot(data = trends,
   geom_line()
 ```
 
+
+# Modélisation
+```{r}
+merged.data = data.frame(trends, bitcoin.data$Close.Price, bitcoin.data$Trend)
+merged.data
+```
+
+
+
+## Premier modèle tout con : régression logistique
+```{r}
+trends
+```
 
 
