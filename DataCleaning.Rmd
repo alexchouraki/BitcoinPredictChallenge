@@ -50,19 +50,20 @@ bitcoin.data$Date = ymd(bitcoin.data$Date) # Transform the date from string into
 ## Generate the binary variable we need to predict
 
 ```{r}
-binary.variable = rep(NA, nrow(bitcoin.data))
+binary.variable = rep(NA, nrow(bitcoin.data) - 1)
 
 for(i in c(1:(nrow(bitcoin.data) - 1))){
   
   if(bitcoin.data$Close.Price[i] > bitcoin.data$Close.Price[i+1]){
     
-    binary.variable[i+1] = "Down"
+    binary.variable[i] = "Down"
     
-  } else {binary.variable[i+1] = "Up"}
+  } else {binary.variable[i] = "Up"}
   
 }
 
-binary.variable[1] = "Up" # Je n'ai pas inclus le 30 avril dans le dataset, donc je rajoute cette ligne manuellement ici
+
+bitcoin.data = bitcoin.data %>% filter(Date != ymd("2015-12-31"))
 ```
 
 ```{r}
@@ -71,7 +72,7 @@ bitcoin.data$Trend = binary.variable
 
 ## Result: data that is clean, with the proper variable to predict
 ```{r}
-bitcoin.data
+colnames(bitcoin.data) = c('date', 'close.price', 'trend')
 ```
 
 ```{r}
@@ -79,6 +80,78 @@ ggplot(data = bitcoin.data,
        aes(x = Date, y = Close.Price)) +
   geom_line()
 ```
+
+# Données regroupées
+```{r}
+NLP_data = read.csv('./data/NLP_grouped_data.csv')
+NLP_data
+```
+
+## Reformater la date
+```{r}
+NLP_data$date = NLP_data$date %>% # Remove the time from the date
+  sapply(as.character)
+
+NLP_data$date = ymd(NLP_data$date)
+```
+
+## Join
+```{r}
+full_data = inner_join(NLP_data, bitcoin.data)
+full_data$trend = as.factor(full_data$trend)
+```
+
+## Split by training and testing data
+```{r}
+train_data = full_data %>% filter(date < ymd('2017/01/05') | date > ymd('2018/01/05'))
+test_data = full_data %>% filter(date >= ymd('2017/01/05') & date <= ymd('2018/01/05'))
+```
+
+## Dummy classifier
+```{r}
+max(sum(test_data$trend == "Up"), sum(test_data$trend == "Down")) / nrow(test_data)
+```
+
+
+## Logistic regression
+```{r}
+reg.model = glm(trend ~ date + polarity + log_merit + post + polarity_and_log_merit, family = "binomial", data = train_data)
+summary(reg.model)
+```
+
+```{r}
+reg.predict = predict(reg.model, test_data, type = "response")
+reg.prediction = prediction(reg.predict, test_data$trend)
+reg.perf = performance(reg.prediction, measure = "tpr", x.measure = "fpr")
+plot(reg.perf)
+```
+
+```{r}
+reg.auc = performance(reg.prediction, measure = "auc")
+reg.auc = reg.auc@y.values[[1]]
+reg.auc
+```
+
+```{r}
+prediction_vector = rep(NA, nrow(test_data))
+prediction_vector[predict(reg.model, test_data, type = "response") > 0.5] = "Up"
+prediction_vector[is.na(prediction_vector)] = "Down"
+
+sum(prediction_vector == test_data$trend) / nrow(test_data)
+```
+
+## Random Forest
+
+```{r}
+set.seed(0)
+rf.model = randomForest(trend ~ date + polarity + log_merit + post + polarity_and_log_merit, data = train_data)
+```
+
+```{r}
+sum(predict(rf.model, test_data, type = "response") == test_data$trend) / nrow(test_data)
+```
+
+
 
 # Quelques réflexions sur des pistes à suivre
 
@@ -92,29 +165,71 @@ Piste intéressante. Mais problème : à partir d'un certain stade, les données
 
 ```{r}
 trends = read.csv('./data/trends.csv')
+trends$date = ymd(trends$date)
 ```
 
 ### Graphe correspondant (exemple Bitcoin)
 
 ```{r}
-trends$date = ymd(trends$date)
 ggplot(data = trends,
-       aes(x = date, y = bitcoin)) +
+       aes(x = date, y = cryptocurrency)) +
   geom_line()
 ```
 
-
 # Modélisation
 ```{r}
-merged.data = data.frame(trends, bitcoin.data$Close.Price, bitcoin.data$Trend)
-merged.data
+library(ROCR)
+library(randomForest)
+```
+
+## On réunit les datasets pour former un truc complet
+```{r}
+trend.data = data.frame(trends, "bitcoin.value" = bitcoin.data$Close.Price, "bitcoin.trend" = bitcoin.data$Trend)
+trend.data
 ```
 
 
+### Split entre training et test dataset
+```{r}
+set.seed(0)
+train.sample = c(1:nrow(trend.data)) %in% sample(c(1:nrow(trend.data)), as.integer(nrow(trend.data) * 0.8))
+train.trend = trend.data[train.sample,]
+test.trend = trend.data[!train.sample,]
+```
+
+## Quelle précision de base ?
+```{r}
+max(sum(test.trend$bitcoin.trend == "Up"), sum(test.trend$bitcoin.trend == "Down")) / nrow(test.trend)
+```
+
+La précision du dummy model (qui prédit toujours la même chose) sera donc de $51.3\%$.
 
 ## Premier modèle tout con : régression logistique
 ```{r}
-trends
+reg.model = glm(bitcoin.trend ~ date + bitcoin + btc + hodl + blockchain, family = binomial, data = train.trend)
+```
+
+```{r}
+reg.predict = predict(reg.model, test.trend, type = "response")
+reg.prediction = prediction(reg.predict, test.trend$bitcoin.trend)
+reg.perf = performance(reg.prediction, measure = "tpr", x.measure = "fpr")
+plot(reg.perf)
+```
+
+```{r}
+reg.auc = performance(reg.prediction, measure = "auc")
+reg.auc = reg.auc@y.values[[1]]
+reg.auc
+```
+
+## Autre type de modèle : Random forest
+```{r}
+set.seed(0)
+rf.model = randomForest(bitcoin.trend ~ date + bitcoin + btc + hodl + blockchain, mtry = 3, data = train.trend)
+```
+
+```{r}
+sum(predict(rf.model, test.trend, type = "response") == test.trend$bitcoin.trend) / nrow(test.trend)
 ```
 
 
