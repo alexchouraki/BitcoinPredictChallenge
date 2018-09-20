@@ -246,7 +246,7 @@ prediction_vector[is.na(prediction_vector)] = "Down"
 print(paste0('Precision on train data: ', sum(prediction_vector == train_data$trend) / nrow(train_data)))
 ```
 
-Meilleure précision par cette méthode : $57\%$.
+Meilleure précision par cette méthode : $57.6\%$.
 
 # Random forest
 Malheureusement, les implémentations de Random Forest sur R ne permettent pas de fixer un max_depth. La seule chose à faire est donc de choisir les bonnes variables et d'optimiser le nombre de variables prises par l'arbre à chaque fois.
@@ -260,10 +260,37 @@ full.rf.model = randomForest(as.formula(paste0("trend ~ ", paste0(colnames(full_
 ```
 
 ```{r}
-sum(predict(full.rf.model, test_data, type = "response") == test_data$trend) / nrow(test_data)
+print(paste0("Precision on test data: ", sum(predict(full.rf.model, test_data, type = "response") == test_data$trend) / nrow(test_data)))
+```
+
+## Première sélection de variables
+On garde la même sélection de variables que sur la deuxième sous-partie de la régression logistique.
+
+```{r}
+set.seed(0)
+fewer.rf.model = randomForest(as.formula(paste0("trend ~ ", paste0(colnames(full_data)[-c(1,3,5,7,8,10,14,16,18,19,21,22)], collapse = " + "))),
+                             ntree = 5000, mtry = 6, nodesize = 1,
+                             data = train_data)
 ```
 
 ```{r}
-predict(full.rf.model, test_data, type = "response")
+print(paste0("Precision on test data: ", sum(predict(fewer.rf.model, test_data, type = "response") == test_data$trend) / nrow(test_data)))
 ```
 
+Les résultats sont un peu meilleurs et dépassent le dummy classifier. Le paramètre mtry = 6 (6 variables essayées à chaque arbre) permet de maximiser la précision sur le test dataset.
+
+## Deuxième sélection de variables (plus exigeante)
+Ici, on prend la même sélection de variables que sur la troisième sous-partie de la régression logistique.
+
+```{r}
+set.seed(0)
+few.rf.model = randomForest(as.formula(paste0("trend ~ ", paste0(colnames(full_data)[-c(1,3,5,6,7,8,10,11,14,16,18,19,21,22)], collapse = " + "))),
+                             ntree = 5000, mtry = 4,
+                             data = train_data)
+```
+
+```{r}
+print(paste0("Precision on test data: ", sum(predict(few.rf.model, test_data, type = "response") == test_data$trend) / nrow(test_data)))
+```
+
+Les résultats sont sensiblement moins bons que dans le cas précédent.
