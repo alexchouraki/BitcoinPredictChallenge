@@ -70,16 +70,12 @@ bitcoin.data = bitcoin.data %>% filter(Date != ymd("2015-12-31"))
 bitcoin.data$Trend = binary.variable
 ```
 
+
 ## Result: data that is clean, with the proper variable to predict
 ```{r}
 colnames(bitcoin.data) = c('date', 'close.price', 'trend')
 ```
 
-```{r}
-ggplot(data = bitcoin.data,
-       aes(x = Date, y = Close.Price)) +
-  geom_line()
-```
 
 # Données regroupées
 ```{r}
@@ -101,23 +97,82 @@ full_data = inner_join(NLP_data, bitcoin.data)
 full_data$trend = as.factor(full_data$trend)
 ```
 
-## Split by training and testing data
+## Adding new features
+### Moving average for the number of posts
+
+
+## Moving average
+
 ```{r}
-train_data = full_data %>% filter(date < ymd('2017/01/05') | date > ymd('2018/01/05'))
-test_data = full_data %>% filter(date >= ymd('2017/01/05') & date <= ymd('2018/01/05'))
+library(pracma)
+full_data$time.diff.movavg = full_data$post - movavg(full_data$post, 7)
+full_data$close.price.movavg = full_data$close.price - movavg(full_data$close.price, 7)
 ```
+
+## Adding a lag of one day
+```{r}
+column_names = colnames(full_data)
+
+for(column in colnames(full_data)){
+  
+  full_data = data.frame(full_data,
+                        c(NA, full_data[[column]][c(1:(nrow(full_data)) - 1)]))
+  
+}
+
+# Change column names to be a bit cleaner
+colnames(full_data) = c(column_names, paste0(column_names, '.D1'))
+```
+
+
+```{r}
+full_data = full_data %>% dplyr::select(-date.D1)
+full_data$trend.D1 = factor(full_data$trend.D1, levels = c(1, 2), labels = c('Down', 'Up'))
+```
+
+```{r}
+full_data$trend.D2 = c(NA, full_data$trend.D1[c(1:nrow(full_data) - 1)])
+full_data$trend.D2 = factor(full_data$trend.D2, levels = c(1, 2), labels = c('Down', 'Up'))
+```
+
+```{r}
+full_data = full_data %>% filter(date >= ymd('2017-05-01') & date <= ymd('2018-07-31'))
+```
+
+## Split by training and testing data
+Train: between May 1st 2017 and April 30th 2018
+Test: between May 1st 2018 and July 31st 2018
+
+```{r}
+scale_data = full_data
+#scale_data[,-c(1,7,15)] = scale(scale_data[,-c(1,7,15)])
+
+train_data = full_data %>% filter(date >= ymd('2017/05/01') & date < ymd('2018/05/01'))
+test_data = full_data %>% filter(date >= ymd('2018/05/01') & date <= ymd('2018/07/31'))
+```
+
+# Attemps to classify
 
 ## Dummy classifier
 ```{r}
 max(sum(test_data$trend == "Up"), sum(test_data$trend == "Down")) / nrow(test_data)
 ```
 
+```{r}
+colnames(full_data)
+```
+
 
 ## Logistic regression
 ```{r}
-reg.model = glm(trend ~ date + polarity + log_merit + post + polarity_and_log_merit, family = "binomial", data = train_data)
+reg.model = glm(trend ~ polarity + polarity.D1 + close.price.D1 + polarity_and_log_merit + polarity_and_log_merit.D1 + trend.D1,
+                family = "binomial",
+                data = train_data)
+
 summary(reg.model)
 ```
+
+
 
 ```{r}
 reg.predict = predict(reg.model, test_data, type = "response")
@@ -140,15 +195,29 @@ prediction_vector[is.na(prediction_vector)] = "Down"
 sum(prediction_vector == test_data$trend) / nrow(test_data)
 ```
 
+```{r}
+prediction_vector = rep(NA, nrow(train_data))
+prediction_vector[predict(reg.model, train_data, type = "response") > 0.5] = "Up"
+prediction_vector[is.na(prediction_vector)] = "Down"
+
+sum(prediction_vector == train_data$trend) / nrow(train_data)
+```
+
+
 ## Random Forest
 
 ```{r}
 set.seed(0)
-rf.model = randomForest(trend ~ date + polarity + log_merit + post + polarity_and_log_merit, data = train_data)
+rf.model = randomForest(trend ~ date + polarity + polarity.D1 + polarity_and_log_merit.D1 + trend.D1 + time.diff.movavg.D1, ntree = 5000, nodesize = 1,
+                data = train_data)
 ```
 
 ```{r}
 sum(predict(rf.model, test_data, type = "response") == test_data$trend) / nrow(test_data)
+```
+
+```{r}
+sum(predict(rf.model, train_data, type = "response") == train_data$trend) / nrow(train_data)
 ```
 
 
@@ -233,3 +302,151 @@ sum(predict(rf.model, test.trend, type = "response") == test.trend$bitcoin.trend
 ```
 
 
+
+# Mélange Google Trends / NLP
+
+```{r}
+merged_trends = read.csv('./data/merged_trends.csv')
+colnames(merged_trends) = c("date", paste0('gt.', colnames(merged_trends)[2:ncol(merged_trends)]))
+merged_trends$date = full_data$date
+full_data = inner_join(full_data, merged_trends)
+```
+
+## Définition modèle train / modèle test
+
+```{r}
+scale_data = full_data
+scale_data[,-c(1,7,15,18)] = scale_data %>% select_if(is.numeric) %>% scale()
+
+train_data = scale_data %>% filter(date >= ymd('2017/05/01') & date < ymd('2018/05/01'))
+test_data = scale_data %>% filter(date >= ymd('2018/05/01') & date <= ymd('2018/07/31'))
+```
+
+## Régression logistique
+
+```{r}
+colnames(full_data)
+```
+
+
+```{r}
+full.reg.model = glm(as.formula(paste0("trend ~ ", paste0(colnames(full_data)[-c(6,7,9)], collapse = " + "))),
+                family = "binomial",
+                data = train_data)
+
+summary(full.reg.model)
+```
+
+### ROC et AUC
+```{r}
+full.reg.predict = predict(full.reg.model, test_data, type = "response")
+full.reg.prediction = prediction(full.reg.predict, test_data$trend)
+full.reg.perf = performance(full.reg.prediction, measure = "tpr", x.measure = "fpr")
+plot(full.reg.perf)
+```
+
+```{r}
+reg.auc = performance(full.reg.prediction, measure = "auc")
+reg.auc = reg.auc@y.values[[1]]
+reg.auc
+```
+
+### Précision
+```{r}
+prediction_vector = rep(NA, nrow(test_data))
+prediction_vector[predict(full.reg.model, test_data, type = "response") > 0.5] = "Up"
+prediction_vector[is.na(prediction_vector)] = "Down"
+
+print(paste0('Precision on test data: ', sum(prediction_vector == test_data$trend) / nrow(test_data)))
+```
+
+```{r}
+prediction_vector = rep(NA, nrow(train_data))
+prediction_vector[predict(full.reg.model, train_data, type = "response") > 0.5] = "Up"
+prediction_vector[is.na(prediction_vector)] = "Down"
+
+print(paste0('Precision on test data: ', sum(prediction_vector == train_data$trend) / nrow(train_data)))
+```
+
+On peut noter qu'il y a très peu de variables pour lesquelles la p-valeur est inférieur à 0.05 (seulement l'indice Google Trends pour le mot-clé "btc" et pour "hodl"). On va donc enlever quelques variables pour voir si cela peut aider à augmenter la précision.
+
+## Régression logistique avec moins de variables
+```{r}
+few.reg.model = glm(as.formula(paste0("trend ~ ", paste0(colnames(full_data)[-c(1,3,4,5,6,7,9,10,11,16,17,21)], collapse = " + "))),
+                family = "binomial",
+                data = train_data)
+
+summary(fewer.reg.model)
+```
+
+```{r}
+fewer.reg.predict = predict(fewer.reg.model, test_data, type = "response")
+fewer.reg.prediction = prediction(fewer.reg.predict, test_data$trend)
+fewer.reg.perf = performance(fewer.reg.prediction, measure = "tpr", x.measure = "fpr")
+plot(fewer.reg.perf)
+```
+
+```{r}
+reg.auc = performance(fewer.reg.prediction, measure = "auc")
+reg.auc = reg.auc@y.values[[1]]
+reg.auc
+```
+
+```{r}
+prediction_vector = rep(NA, nrow(test_data))
+prediction_vector[predict(fewer.reg.model, test_data, type = "response") > 0.5] = "Up"
+prediction_vector[is.na(prediction_vector)] = "Down"
+
+print(paste0('Precision on test data: ', sum(prediction_vector == test_data$trend) / nrow(test_data)))
+```
+
+```{r}
+prediction_vector = rep(NA, nrow(train_data))
+prediction_vector[predict(fewer.reg.model, train_data, type = "response") > 0.5] = "Up"
+prediction_vector[is.na(prediction_vector)] = "Down"
+
+print(paste0('Precision on test data: ', sum(prediction_vector == train_data$trend) / nrow(train_data)))
+```
+
+```{r}
+colnames(full_data)
+```
+
+
+## Dernière régression logistique avec encore moins de variables
+```{r}
+few.reg.model = glm(as.formula(paste0("trend ~ ", paste0(colnames(full_data)[-c(1,3,4,5,6,7,8,9,10,11,16,17,21)], collapse = " + "))),
+                family = "binomial",
+                data = train_data)
+
+summary(few.reg.model)
+```
+
+```{r}
+few.reg.predict = predict(few.reg.model, test_data, type = "response")
+few.reg.prediction = prediction(few.reg.predict, test_data$trend)
+few.reg.perf = performance(few.reg.prediction, measure = "tpr", x.measure = "fpr")
+plot(few.reg.perf)
+```
+
+```{r}
+reg.auc = performance(few.reg.prediction, measure = "auc")
+reg.auc = reg.auc@y.values[[1]]
+reg.auc
+```
+
+```{r}
+prediction_vector = rep(NA, nrow(test_data))
+prediction_vector[predict(few.reg.model, test_data, type = "response") > 0.5] = "Up"
+prediction_vector[is.na(prediction_vector)] = "Down"
+
+print(paste0('Precision on test data: ', sum(prediction_vector == test_data$trend) / nrow(test_data)))
+```
+
+```{r}
+prediction_vector = rep(NA, nrow(train_data))
+prediction_vector[predict(few.reg.model, train_data, type = "response") > 0.5] = "Up"
+prediction_vector[is.na(prediction_vector)] = "Down"
+
+print(paste0('Precision on test data: ', sum(prediction_vector == train_data$trend) / nrow(train_data)))
+```

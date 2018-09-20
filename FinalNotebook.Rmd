@@ -1,0 +1,269 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+```{r}
+library(tidyverse)
+library(lubridate)
+library(pracma)
+library(ROCR)
+library(randomForest)
+```
+
+# Notes générales
+- Training dataset : prédiction du cours du bitcoin entre le 1er mai 2017 et le 1er mai 2018
+
+- Test dataset : prédiction du cours du bitcoin entre le 1er mai 2018 et le 31 juillet 2018
+
+# Chargement des données
+
+## Bitcoin
+```{r}
+bitcoin.prices = read.csv('./data/btc_quote.csv') %>% select(-X)
+bitcoin.prices$Date = ymd(bitcoin.prices$Date)
+colnames(bitcoin.prices) = c('date', 'open', 'high', 'low', 'close', 'volume', 'market.cap', 'price')
+```
+
+Ajout du prix de cloture au jour J-1 et J-2:
+```{r}
+bitcoin.prices$close.D1 = c(NA, bitcoin.prices$close[c(1:(nrow(bitcoin.prices) - 1))])
+bitcoin.prices$close.movavg = bitcoin.prices$close - movavg(bitcoin.prices$close, 7)
+bitcoin.prices$close.D2 = c(NA, bitcoin.prices$close.D1[c(1:(nrow(bitcoin.prices) - 1))])
+```
+
+Ajout de la variable Up / Down :
+```{r}
+bitcoin.prices$trend = (bitcoin.prices$close - bitcoin.prices$close.D1) > 0
+bitcoin.prices$trend = factor(bitcoin.prices$trend, levels = c(FALSE, TRUE), labels = c("Down", "Up"))
+
+bitcoin.prices$trend.D1 = c(NA, bitcoin.prices$trend[c(1:(nrow(bitcoin.prices) - 1))])
+bitcoin.prices$trend.D1 = factor(bitcoin.prices$trend.D1, levels = c(1, 2), labels = c("Up", "Down"))
+
+bitcoin.prices$trend.D2 = c(NA, bitcoin.prices$trend.D1[c(1:(nrow(bitcoin.prices) - 1))])
+bitcoin.prices$trend.D2 = factor(bitcoin.prices$trend.D2, levels = c(1, 2), labels = c("Up", "Down"))
+```
+
+```{r}
+bitcoin.prices = bitcoin.prices %>% select(c(date, close.D1, close.D2, trend.D1, trend.D2, close, trend))
+```
+
+On fait enfin un filtre sur la date pour ne garder que ce qui nous intéresse.
+```{r}
+bitcoin.prices = bitcoin.prices %>% filter(date >= ymd('2017-05-01') & date <= ymd('2018-07-31'))
+```
+
+## Données de scraping
+Ces données ont été générées à partir du dataset `NLP_Crypto_Dataset`, et traitées sur Jupyter (notebook `NLP_new_data`).
+```{r}
+NLP_data = read.csv('./data/NLP_grouped_data.csv')
+```
+
+On ajoute la différence entre le nombre de posts et sa moyenne glissante sur sept jours:
+```{r}
+NLP_data$post.movavg = NLP_data$post - movavg(NLP_data$post, 7)
+```
+
+On dédouble toutes les colonnes pour avoir leur valeur à J-1 :
+```{r}
+column_names = colnames(NLP_data)
+
+for(column in colnames(NLP_data)){
+  
+  NLP_data = data.frame(NLP_data,
+                        c(NA, NLP_data[[column]][c(1:(nrow(NLP_data)) - 1)]))
+  
+}
+
+# Change column names to be a bit cleaner
+colnames(NLP_data) = c(column_names, paste0(column_names, '.D1'))
+
+# Remove date.D1 since it does not make any sense
+NLP_data = NLP_data %>% dplyr::select(-date.D1)
+```
+
+De même, on fait un filtre sur les dates pour ne conserver que la période qui nous intéresse.
+```{r}
+NLP_data$date = ymd(NLP_data$date)
+NLP_data = NLP_data %>% filter(date >= ymd('2017-05-01') & date <= ymd('2018-07-31'))
+```
+
+## Données Google Trends
+Ces données ont été obtenues grâce au notebook Jupyter `GoogleTrendsGenerator`.
+
+```{r}
+GT_data = read.csv('./data/merged_trends.csv')
+GT_data$date = ymd(GT_data$date)
+colnames(GT_data) = c("date", paste0('gt.', colnames(GT_data)[2:ncol(GT_data)]))
+GT_data
+```
+
+## Tout réunir ensemble
+```{r}
+full_data = inner_join(NLP_data, GT_data)
+full_data = inner_join(full_data, bitcoin.prices)
+full_data
+```
+
+## Enfin : définition des données train et test
+```{r}
+scale_data = full_data
+scale_data[,-c(1,19,20,22)] = full_data[,-c(1,19,20,22)] %>% scale()
+
+train_data = scale_data %>% filter(date >= ymd('2017/05/01') & date < ymd('2018/05/01'))
+test_data = scale_data %>% filter(date >= ymd('2018/05/01') & date <= ymd('2018/07/31'))
+```
+
+# Premier modèle : régression logistique
+## Avec toutes les variables
+```{r}
+full.reg.model = glm(as.formula(paste0("trend ~ ", paste0(colnames(full_data)[-c(21,22)], collapse = " + "))),
+                family = "binomial",
+                data = train_data)
+
+summary(full.reg.model)
+```
+
+### ROC et AUC
+```{r}
+full.reg.predict = predict(full.reg.model, test_data, type = "response")
+full.reg.prediction = prediction(full.reg.predict, test_data$trend)
+full.reg.perf = performance(full.reg.prediction, measure = "tpr", x.measure = "fpr")
+plot(full.reg.perf)
+```
+
+```{r}
+reg.auc = performance(full.reg.prediction, measure = "auc")
+reg.auc = reg.auc@y.values[[1]]
+reg.auc
+```
+
+### Précision
+```{r}
+prediction_vector = rep(NA, nrow(test_data))
+prediction_vector[predict(full.reg.model, test_data, type = "response") > 0.5] = "Up"
+prediction_vector[is.na(prediction_vector)] = "Down"
+
+print(paste0('Precision on test data: ', sum(prediction_vector == test_data$trend) / nrow(test_data)))
+```
+
+```{r}
+prediction_vector = rep(NA, nrow(train_data))
+prediction_vector[predict(full.reg.model, train_data, type = "response") > 0.5] = "Up"
+prediction_vector[is.na(prediction_vector)] = "Down"
+
+print(paste0('Precision on train data: ', sum(prediction_vector == train_data$trend) / nrow(train_data)))
+```
+
+On peut noter qu'il y a très peu de variables pour lesquelles la p-valeur est inférieur à 0.05 (seulement l'indice Google Trends pour le mot-clé "btc" et pour "hodl"). On va donc enlever quelques variables pour voir si cela peut aider à augmenter la précision.
+
+## En enlevant quelques variables
+```{r}
+colnames(full_data)
+```
+
+```{r}
+fewer.reg.model = glm(as.formula(paste0("trend ~ ", paste0(colnames(full_data)[-c(1,3,5,7,8,10,14,16,18,19,21,22)], collapse = " + "))),
+                family = "binomial",
+                data = train_data)
+
+summary(fewer.reg.model)
+```
+
+### ROC et AUC
+```{r}
+fewer.reg.predict = predict(fewer.reg.model, test_data, type = "response")
+fewer.reg.prediction = prediction(fewer.reg.predict, test_data$trend)
+fewer.reg.perf = performance(fewer.reg.prediction, measure = "tpr", x.measure = "fpr")
+plot(fewer.reg.perf)
+```
+
+```{r}
+reg.auc = performance(fewer.reg.prediction, measure = "auc")
+reg.auc = reg.auc@y.values[[1]]
+reg.auc
+```
+
+### Précision
+```{r}
+prediction_vector = rep(NA, nrow(test_data))
+prediction_vector[predict(fewer.reg.model, test_data, type = "response") > 0.5] = "Up"
+prediction_vector[is.na(prediction_vector)] = "Down"
+
+print(paste0('Precision on test data: ', sum(prediction_vector == test_data$trend) / nrow(test_data)))
+```
+
+```{r}
+prediction_vector = rep(NA, nrow(train_data))
+prediction_vector[predict(fewer.reg.model, train_data, type = "response") > 0.5] = "Up"
+prediction_vector[is.na(prediction_vector)] = "Down"
+
+print(paste0('Precision on train data: ', sum(prediction_vector == train_data$trend) / nrow(train_data)))
+```
+
+## En en enlevant encore plus
+
+```{r}
+colnames(full_data)
+```
+
+```{r}
+few.reg.model = glm(as.formula(paste0("trend ~ ", paste0(colnames(full_data)[-c(1,3,5,6,7,8,10,11,14,16,18,19,21,22)], collapse = " + "))),
+                family = "binomial",
+                data = train_data)
+
+summary(few.reg.model)
+```
+
+### ROC et AUC
+```{r}
+few.reg.predict = predict(few.reg.model, test_data, type = "response")
+few.reg.prediction = prediction(few.reg.predict, test_data$trend)
+few.reg.perf = performance(few.reg.prediction, measure = "tpr", x.measure = "fpr")
+plot(few.reg.perf)
+```
+
+```{r}
+reg.auc = performance(few.reg.prediction, measure = "auc")
+reg.auc = reg.auc@y.values[[1]]
+reg.auc
+```
+
+### Précision
+```{r}
+prediction_vector = rep(NA, nrow(test_data))
+prediction_vector[predict(few.reg.model, test_data, type = "response") > 0.5] = "Up"
+prediction_vector[is.na(prediction_vector)] = "Down"
+
+print(paste0('Precision on test data: ', sum(prediction_vector == test_data$trend) / nrow(test_data)))
+```
+
+```{r}
+prediction_vector = rep(NA, nrow(train_data))
+prediction_vector[predict(few.reg.model, train_data, type = "response") > 0.5] = "Up"
+prediction_vector[is.na(prediction_vector)] = "Down"
+
+print(paste0('Precision on train data: ', sum(prediction_vector == train_data$trend) / nrow(train_data)))
+```
+
+Meilleure précision par cette méthode : $57\%$.
+
+# Random forest
+Malheureusement, les implémentations de Random Forest sur R ne permettent pas de fixer un max_depth. La seule chose à faire est donc de choisir les bonnes variables et d'optimiser le nombre de variables prises par l'arbre à chaque fois.
+
+## Avec toutes les variables
+```{r}
+set.seed(0)
+full.rf.model = randomForest(as.formula(paste0("trend ~ ", paste0(colnames(full_data)[-c(21,22)], collapse = " + "))),
+                             ntree = 5000,
+                             data = train_data)
+```
+
+```{r}
+sum(predict(full.rf.model, test_data, type = "response") == test_data$trend) / nrow(test_data)
+```
+
+```{r}
+predict(full.rf.model, test_data, type = "response")
+```
+
